@@ -42,7 +42,7 @@ func decodeBase62(str string) *big.Int {
 	base := big.NewInt(62)
 
 	for _, c := range str {
-		// TODO: optimize to map O(n^2) to O(n)
+		// TODO: optimize to map O(n^2) to O(1)
 		index := int64(indexOf(string(c)))
 		result.Mul(result, base)
 		result.Add(result, big.NewInt(index))
