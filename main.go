@@ -2,24 +2,29 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"pompidou17/shortener/internal/config"
 	"pompidou17/shortener/internal/hash"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/joho/godotenv"
 )
 
-type url struct {
-	id       int64
-	shortUrl string
-	longUrl  string
+type Store struct {
+	mu   sync.RWMutex
+	data map[string]string
+	id   int64
 }
 
-var db []url
+var db = Store{
+	data: make(map[string]string),
+}
+
+var shorCodeRegexp = regexp.MustCompile(`^[a-zA-Z0-9]{8}$`)
 
 func init() {
 	if err := godotenv.Load(); err != nil {
@@ -27,81 +32,77 @@ func init() {
 	}
 }
 
-func shortenHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		log.Println("Method not allowed, expected: POST, but got:", r.Method)
-		http.Error(w, "Method not allowed, expected: POST, but got: "+r.Method, http.StatusMethodNotAllowed)
-	} else {
+func shortenHandler(conf *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		salt := conf.SecretSalt
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed, expected: POST, but got: "+r.Method, http.StatusMethodNotAllowed)
+			return
+		}
+
 		type RequestBody struct {
 			URL *string `json:"url"`
 		}
-		// TODO: refactor secrets
-		salt := config.New().SecretSalt
 
-		jsonBlob, err := io.ReadAll(r.Body)
+		var reqBody RequestBody
+
+		err := json.NewDecoder(r.Body).Decode(&reqBody)
+
 		if err != nil {
-			log.Println("Body read err:", err)
 			http.Error(w, "Body read err:"+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		var reqBody RequestBody
-		err = json.Unmarshal(jsonBlob, &reqBody)
-
-		if err != nil {
-			log.Println("Body parse err:", err)
-			http.Error(w, "Body parse err:"+err.Error(), http.StatusBadRequest)
-			return
-		}
-
 		longUrl := reqBody.URL
-		if longUrl == nil || *reqBody.URL == "" {
-			log.Println("URL not provided in body or it is empty")
+		if longUrl == nil || *longUrl == "" {
 			http.Error(w, "URL not provided in body or it is empty", http.StatusBadRequest)
 			return
-		} else {
-			id := int64(len(db) + 1)
-			shortUrl := hash.EncodeId(id, salt)
+		}
 
-			url := url{
-				id:       id,
-				longUrl:  *longUrl,
-				shortUrl: shortUrl,
-			}
+		parsed, err := url.ParseRequestURI(*longUrl)
 
-			db = append(db, url)
-			log.Println(longUrl, url, db)
-
-			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(shortUrl))
+		if err != nil {
+			http.Error(w, "Invalid URL", http.StatusBadRequest)
 			return
 		}
+
+		db.mu.Lock()
+		defer db.mu.Unlock()
+
+		db.id++
+		id := db.id
+		shortUrl := hash.EncodeId(id, salt)
+
+		db.data[shortUrl] = parsed.String()
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(shortUrl))
 	}
 }
 
 func decodeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		log.Println("Method not allowed, expected: GET, but got:", r.Method)
 		http.Error(w, "Method not allowed, expected: GET, but got: "+r.Method, http.StatusMethodNotAllowed)
 		return
 	}
 	code := strings.TrimPrefix(r.URL.Path, "/")
 
-	matched, _ := regexp.MatchString(`^[a-zA-Z0-9]{8}$`, code)
-	if !matched {
+	if !shorCodeRegexp.MatchString(code) {
 		http.NotFound(w, r)
 		return
 	}
 
-	// TODO: optimize to O(1)
-	for _, url := range db {
-		if url.shortUrl == code {
-			log.Printf("Redirecting %s -> %s", code, url.longUrl)
-			http.Redirect(w, r, url.longUrl, http.StatusMovedPermanently)
-			return
-		}
+	db.mu.RLock()
+	long, exists := db.data[code]
+	db.mu.RUnlock()
+
+	if exists {
+		http.Redirect(w, r, long, http.StatusMovedPermanently)
+		return
 	}
-	log.Printf("Code %s not found", code)
+
 	http.NotFound(w, r)
 }
 
@@ -110,7 +111,7 @@ func main() {
 
 	port := ":" + conf.Port
 
-	http.HandleFunc("/shorten", shortenHandler)
+	http.HandleFunc("/shorten", shortenHandler(conf))
 	http.HandleFunc("/", decodeHandler)
 	log.Fatal((http.ListenAndServe(port, nil)))
 }
