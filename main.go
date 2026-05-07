@@ -10,14 +10,15 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Store struct {
-	mu   sync.RWMutex
-	data map[string]string
-	id   int64
+	mu      sync.RWMutex
+	data    map[string]string
+	counter int64
 }
 
 var db = Store{
@@ -32,7 +33,7 @@ func init() {
 	}
 }
 
-func shortenHandler(conf *config.Config) http.HandlerFunc {
+func ShortenHandler(conf *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		salt := conf.SecretSalt
 
@@ -70,9 +71,9 @@ func shortenHandler(conf *config.Config) http.HandlerFunc {
 		db.mu.Lock()
 		defer db.mu.Unlock()
 
-		db.id++
-		id := db.id
-		shortUrl := hash.EncodeId(id, salt)
+		db.counter++
+		counter := db.counter
+		shortUrl := hash.EncodeId(counter, salt)
 
 		db.data[shortUrl] = parsed.String()
 
@@ -82,7 +83,7 @@ func shortenHandler(conf *config.Config) http.HandlerFunc {
 	}
 }
 
-func decodeHandler(w http.ResponseWriter, r *http.Request) {
+func LengthenHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed, expected: GET, but got: "+r.Method, http.StatusMethodNotAllowed)
 		return
@@ -99,7 +100,7 @@ func decodeHandler(w http.ResponseWriter, r *http.Request) {
 	db.mu.RUnlock()
 
 	if exists {
-		http.Redirect(w, r, long, http.StatusMovedPermanently)
+		http.Redirect(w, r, long, http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -111,7 +112,20 @@ func main() {
 
 	port := ":" + conf.Port
 
-	http.HandleFunc("/shorten", shortenHandler(conf))
-	http.HandleFunc("/", decodeHandler)
-	log.Fatal((http.ListenAndServe(port, nil)))
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/shorten", ShortenHandler(conf))
+	mux.HandleFunc("/", LengthenHandler)
+
+	srv := http.Server{
+		Addr:           port,
+		Handler:        mux,
+		ReadTimeout:    5 * time.Second,
+		WriteTimeout:   5 * time.Second,
+		IdleTimeout:    5 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+
+	log.Fatal(srv.ListenAndServe())
+
 }
