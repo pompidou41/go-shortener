@@ -6,17 +6,21 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"pompidou17/shortener/internal/config"
-	"pompidou17/shortener/internal/hash"
+	"pompidou41/go-shortener/internal/config"
+	"pompidou41/go-shortener/internal/handler"
+	"pompidou41/go-shortener/internal/hash"
+	"pompidou41/go-shortener/internal/storage"
 	"strings"
 	"testing"
 )
 
 func TestMainHandlers(t *testing.T) {
+	conf := config.Config{
+		SecretSalt: "salt",
+	}
 	t.Run("POST /shorten", func(t *testing.T) {
-		conf := config.Config{
-			SecretSalt: "salt",
-		}
+		store := storage.NewStore()
+		h := handler.NewHandler(store, &conf)
 
 		cases := []struct {
 			name           string
@@ -57,10 +61,6 @@ func TestMainHandlers(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				db = Store{
-					data: make(map[string]string),
-				}
-
 				var buf bytes.Buffer
 
 				if tc.body != nil {
@@ -73,8 +73,7 @@ func TestMainHandlers(t *testing.T) {
 				req := httptest.NewRequest(tc.method, "/shorten", &buf)
 				w := httptest.NewRecorder()
 
-				handler := ShortenHandler(&conf)
-				handler(w, req)
+				h.ShortenHandler(w, req)
 
 				res := w.Result()
 				defer res.Body.Close()
@@ -96,13 +95,15 @@ func TestMainHandlers(t *testing.T) {
 	})
 
 	t.Run("GET /", func(t *testing.T) {
-		db = Store{
-			data: map[string]string{
+		store := storage.NewStore()
+		store = &storage.Store{
+			Data: map[string]string{
 				"dsF521cZ": "https://example.com/",
 				"g638sAGc": "https://onemore.site/page/2",
 			},
-			counter: 2,
 		}
+
+		h := handler.NewHandler(store, &conf)
 
 		cases := []struct {
 			name           string
@@ -116,7 +117,7 @@ func TestMainHandlers(t *testing.T) {
 				method:         http.MethodGet,
 				param:          "g638sAGc",
 				expectedStatus: http.StatusTemporaryRedirect,
-				expectedHeader: map[string]string{"Location": db.data["g638sAGc"]},
+				expectedHeader: map[string]string{"Location": store.Data["g638sAGc"]},
 			},
 			{
 				name:           "Invalid method",
@@ -149,7 +150,7 @@ func TestMainHandlers(t *testing.T) {
 				req := httptest.NewRequest(tc.method, "/"+tc.param, nil)
 				w := httptest.NewRecorder()
 
-				LengthenHandler(w, req)
+				h.LengthenHandler(w, req)
 
 				res := w.Result()
 

@@ -1,4 +1,4 @@
-module pompidou17/shortener
+module pompidou41/go-shortener
 
 go 1.26.2
 
