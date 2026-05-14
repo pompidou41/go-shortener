@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"pompidou41/go-shortener/internal/config"
 	"pompidou41/go-shortener/internal/handler"
+	"pompidou41/go-shortener/internal/service"
 	"pompidou41/go-shortener/internal/storage"
+
 	"time"
 
 	"github.com/joho/godotenv"
@@ -19,9 +22,14 @@ func init() {
 
 func main() {
 	conf := config.New()
-	store := storage.NewStore()
 
-	h := handler.NewHandler(store, conf)
+	ctx := context.Background()
+
+	store := storage.New()
+
+	service := service.New(store)
+
+	h := handler.NewHandler(ctx, service)
 
 	port := ":" + conf.Port
 

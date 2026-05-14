@@ -1,30 +1,28 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-	"pompidou41/go-shortener/internal/config"
-	"pompidou41/go-shortener/internal/hash"
-	"pompidou41/go-shortener/internal/storage"
+	"pompidou41/go-shortener/internal/service"
+
 	"pompidou41/go-shortener/internal/utils/validator"
 	"regexp"
 	"strings"
 )
 
 type Handler struct {
-	store *storage.Store
-	conf  *config.Config
+	ctx     context.Context
+	service service.Service
 }
 
-func NewHandler(store *storage.Store, conf *config.Config) *Handler {
-	return &Handler{store: store, conf: conf}
+func NewHandler(ctx context.Context, service service.Service) *Handler {
+	return &Handler{ctx: ctx, service: service}
 }
 
-var shorCodeRegexp = regexp.MustCompile(`^[a-zA-Z0-9]{8}$`)
+var shortCodeRegexp = regexp.MustCompile(`^[a-zA-Z0-9]{8}$`)
 
 func (h *Handler) ShortenHandler(w http.ResponseWriter, r *http.Request) {
-	salt := h.conf.SecretSalt
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed, expected: POST, but got: "+r.Method, http.StatusMethodNotAllowed)
 		return
@@ -56,18 +54,16 @@ func (h *Handler) ShortenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.store.Mu.Lock()
-	defer h.store.Mu.Unlock()
+	code, err := h.service.Shorten(h.ctx, *longUrl)
 
-	h.store.Counter++
-	counter := h.store.Counter
-	shortUrl := hash.EncodeId(counter, salt)
-
-	h.store.Data[shortUrl] = *longUrl
+	if err != nil {
+		http.Error(w, "Item not created", http.StatusBadGateway)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte(shortUrl))
+	w.Write([]byte(code))
 }
 
 func (h *Handler) LengthenHandler(w http.ResponseWriter, r *http.Request) {
@@ -77,19 +73,17 @@ func (h *Handler) LengthenHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.TrimPrefix(r.URL.Path, "/")
 
-	if !shorCodeRegexp.MatchString(code) {
+	if !shortCodeRegexp.MatchString(code) {
 		http.NotFound(w, r)
 		return
 	}
 
-	h.store.Mu.RLock()
-	long, exists := h.store.Data[code]
-	h.store.Mu.RUnlock()
+	longUrl, err := h.service.Resolve(h.ctx, code)
 
-	if exists {
-		http.Redirect(w, r, long, http.StatusTemporaryRedirect)
+	if err != nil {
+		http.NotFound(w, r)
 		return
 	}
 
-	http.NotFound(w, r)
+	http.Redirect(w, r, longUrl, http.StatusTemporaryRedirect)
 }
